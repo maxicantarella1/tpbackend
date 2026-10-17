@@ -1,0 +1,5 @@
+com\turismo\common\ErrorResponse.class
+com\turismo\common\RecursoNoEncontradoException.class
+com\turismo\common\ServicioNoDisponibleException.class
+com\turismo\common\ConflictoNegocioException.class
+com\turismo\common\ManejadorErroresComun.class
