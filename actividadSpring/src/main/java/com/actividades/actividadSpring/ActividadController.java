@@ -1,6 +1,5 @@
 package com.actividades.actividadSpring;
 
-import com.actividades.actividadSpring.ActividadRepository;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -11,32 +10,35 @@ import java.util.List;
 @RequestMapping("/actividades")
 public class ActividadController {
 
-    private final ActividadRepository repo;
+    private final ActividadService service;
 
-    public ActividadController(ActividadRepository repo) {
-        this.repo = repo;
+    public ActividadController(ActividadService service) {
+        this.service = service;
     }
 
     @GetMapping
-    public List<Actividad> listar() {
-        return repo.findAll();
-    }
+    public List<Actividad> listar() { return service.listar(); }
 
     @GetMapping("/{id}")
-    public Actividad obtener(@PathVariable Long id) {
-        return repo.findById(id)
-                .orElseThrow(() -> new ActividadNoEncontradaException(id));
-    }
+    public Actividad obtener(@PathVariable Long id) { return service.obtener(id); }
 
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)          // 201
-    public Actividad crear(@Valid @RequestBody Actividad a) {
-        return repo.save(a);
-    }
+    @ResponseStatus(HttpStatus.CREATED)
+    public Actividad crear(@Valid @RequestBody Actividad a) { return service.crear(a); }
 
     @DeleteMapping("/{id}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)       // 204
-    public void borrar(@PathVariable Long id) {
-        repo.deleteById(id);
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void borrar(@PathVariable Long id) { service.borrar(id); }
+
+    @PatchMapping("/{id}/cupo")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void descontarCupo(@PathVariable Long id, @Valid @RequestBody CupoRequest req) {
+        service.descontarCupo(id, req.cantidad());
+    }
+
+    @PostMapping("/{id}/cupo/devolucion")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void devolverCupo(@PathVariable Long id, @Valid @RequestBody CupoRequest req) {
+        service.devolverCupo(id, req.cantidad());
     }
 }

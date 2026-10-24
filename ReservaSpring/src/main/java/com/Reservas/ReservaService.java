@@ -39,7 +39,12 @@ public class ReservaService {
         r.setFecha(req.fecha());
         r.setCantidadPersonas(req.cantidadPersonas());
         r.setEstado(EstadoReserva.CONFIRMADA);
-        return repo.save(r);
+        try {
+            return repo.save(r);
+        } catch (RuntimeException e) {
+            devolverCupo(actividad.id(), req.cantidadPersonas()); // compensación
+            throw e;
+        }
     }
 
     public List<Reserva> listar() {
@@ -60,6 +65,20 @@ public class ReservaService {
             throw new ActividadInexistenteException(id);
         } catch (ResourceAccessException | HttpServerErrorException e) {
             throw new ServicioNoDisponibleException("actividades-service");
+        }
+    }
+
+    private void devolverCupo(Long id, int cantidad) {
+        try {
+            actividades.post()
+                    .uri("/actividades/{id}/cupo/devolucion", id)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of("cantidad", cantidad))
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RuntimeException ex) {
+            // best-effort: se registra para conciliar a mano; no tapa el error original
+            System.err.println("No se pudo devolver el cupo de la actividad " + id + ": " + ex.getMessage());
         }
     }
 

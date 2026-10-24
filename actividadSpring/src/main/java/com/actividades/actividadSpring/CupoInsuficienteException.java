@@ -1,10 +1,9 @@
 package com.actividades.actividadSpring;
 
-import jakarta.validation.constraints.Min;
+import com.turismo.common.ConflictoNegocioException;
 
-public class CupoInsuficienteException extends RuntimeException {
-    public CupoInsuficienteException(Long id, int pedido, int disponible) {
-        super("Actividad " + id + ": se piden " + pedido + " lugares y hay " + disponible);
+public class CupoInsuficienteException extends ConflictoNegocioException {
+    public CupoInsuficienteException(Long id, int pedido) {
+        super("Actividad " + id + ": no hay cupo suficiente para " + pedido + " lugares");
     }
 }
-
