@@ -18,6 +18,8 @@ public class Reserva {
     private LocalDate fecha;
     private int cantidadPersonas;
 
+    private String motivo; // por qué está pendiente/cancelada
+
     @Enumerated(EnumType.STRING)
     private EstadoReserva estado; // PENDIENTE, CONFIRMADA, CANCELADA
 }

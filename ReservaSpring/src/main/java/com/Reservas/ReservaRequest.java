@@ -12,4 +12,5 @@ public record ReservaRequest(
         @NotNull Long actividadId,
         @NotBlank String usuario,
         @NotNull @FutureOrPresent LocalDate fecha,
-        @Min(1) int cantidadPersonas) { }
+        @Min(1) int cantidadPersonas,
+        @Min(0) int edadMinimaParticipante) { }

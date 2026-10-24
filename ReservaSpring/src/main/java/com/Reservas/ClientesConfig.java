@@ -9,14 +9,20 @@ import org.springframework.web.client.RestClient;
 @Configuration
 public class ClientesConfig {
 
+    private static SimpleClientHttpRequestFactory factory(int connectMs, int readMs) {
+        SimpleClientHttpRequestFactory f = new SimpleClientHttpRequestFactory();
+        f.setConnectTimeout(connectMs);
+        f.setReadTimeout(readMs);
+        return f;
+    }
+
     @Bean
     RestClient actividadesClient(@Value("${actividades.url}") String url) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(2000);  //  ms
-        factory.setReadTimeout(3000);
-        return RestClient.builder()
-                .baseUrl(url)
-                .requestFactory(factory)
-                .build();
+        return RestClient.builder().baseUrl(url).requestFactory(factory(2000, 3000)).build();
+    }
+
+    @Bean
+    RestClient climaRestClient(@Value("${clima.url}") String url) {
+        return RestClient.builder().baseUrl(url).requestFactory(factory(2000, 3000)).build();
     }
 }
