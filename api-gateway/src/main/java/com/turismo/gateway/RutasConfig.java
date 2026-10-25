@@ -19,6 +19,9 @@ public class RutasConfig {
                               @Value("${gateway.url-reservas}") String urlReservas) {
         return builder.routes()
                 .route("actividades", p -> p.path("/actividades/**", "/proveedores/**").uri(urlActividades))
+                // OpenAPI de cada servicio, publicado por el Gateway (los servicios no son alcanzables desde afuera)
+                .route("docs-actividades", p -> p.path("/docs/actividades").filters(f -> f.setPath("/v3/api-docs")).uri(urlActividades))
+                .route("docs-reservas", p -> p.path("/docs/reservas").filters(f -> f.setPath("/v3/api-docs")).uri(urlReservas))
                 .route("reservas", p -> p.path("/reservas/**").uri(urlReservas))
                 .build();
     }

@@ -60,4 +60,11 @@ class SecurityConfigTest {
         web.mutateWith(mockJwt().authorities(new SimpleGrantedAuthority("ROLE_ADMIN")))
                 .get().uri("/otra-cosa").exchange().expectStatus().isForbidden();
     }
+
+    @Test
+    void laDocumentacionEsPublica() {
+        // sin token no debe ser 401/403 (el destino no existe en el test: puede dar 5xx, pero no rechazo de seguridad)
+        web.get().uri("/swagger-ui.html").exchange().expectStatus().value(st ->
+                org.junit.jupiter.api.Assertions.assertFalse(st == 401 || st == 403, "status " + st));
+    }
 }

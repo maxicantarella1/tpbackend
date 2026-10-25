@@ -1,5 +1,8 @@
 package com.actividades.actividadSpring;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
@@ -59,6 +62,12 @@ public class ActividadController {
         return service.obtenerSalida(id, fecha);
     }
 
+    @Operation(summary = "INTERNO: descuenta cupo de una salida",
+            description = "Atómico. Lo usa Reservas; el Gateway no lo expone al exterior.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "204", description = "Cupo descontado"),
+            @ApiResponse(responseCode = "404", description = "No existe la actividad o la salida"),
+            @ApiResponse(responseCode = "409", description = "Cupo insuficiente")})
     @PatchMapping("/{id}/salidas/{fecha}/cupo")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void descontarCupo(@PathVariable Long id,

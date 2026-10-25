@@ -33,6 +33,8 @@ public class SecurityConfig {
             .csrf(ServerHttpSecurity.CsrfSpec::disable) // API sin sesión ni cookies: autenticación por Bearer token
             .authorizeExchange(ex -> ex
                 .pathMatchers("/actuator/health").permitAll()
+                // documentación OpenAPI / Swagger UI (solo describe la API; no ejecuta nada sin token)
+                .pathMatchers("/docs/**", "/swagger-ui.html", "/swagger-ui/**", "/webjars/**", "/v3/api-docs/**").permitAll()
                 // endpoints INTERNOS (Reservas -> Actividades): nunca expuestos a clientes externos
                 .pathMatchers("/actividades/*/salidas/*/cupo/**").denyAll()
                 // catálogo público: cualquiera puede consultar actividades y salidas

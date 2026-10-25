@@ -2,6 +2,9 @@ package com.Reservas;
 
 import com.turismo.common.Identidad;
 import com.turismo.common.Seguridad;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -27,6 +30,16 @@ public class ReservaController {
         return Identidad.desde(usuario, roles);
     }
 
+    @Operation(summary = "Crear reserva",
+            description = "Valida temporada, edad, nivel, estado de la actividad y clima; descuenta cupo de la salida. "
+                    + "Queda CONFIRMADA, o PENDIENTE si no hay pronóstico disponible.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "Reserva creada"),
+            @ApiResponse(responseCode = "400", description = "Datos inválidos"),
+            @ApiResponse(responseCode = "404", description = "La actividad no existe"),
+            @ApiResponse(responseCode = "409", description = "Sin cupo en la salida"),
+            @ApiResponse(responseCode = "422", description = "Regla de negocio incumplida (temporada, edad, nivel, clima, sin salida)"),
+            @ApiResponse(responseCode = "503", description = "Actividades no disponible")})
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Reserva crear(@Valid @RequestBody ReservaRequest req,

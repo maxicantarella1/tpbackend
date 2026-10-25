@@ -166,3 +166,41 @@ Los ejemplos de `curl` directos a :8081/:8082 de pasos anteriores ahora dan 403 
 - *¿Qué contiene el JWT?* header, payload (iss, exp, preferred_username, realm_access.roles) y firma RS256; se valida con las claves públicas del JWKS de Keycloak.
 - *¿Por qué RestClient y no Feign/RestTemplate?* Es el cliente recomendado en Spring 6.1+/Boot 3.2 (apunte 18).
 - *¿Qué es el trusted zone en tu solución?* Gateway + servicios en la red interna; el Gateway es el único con acceso externo y el que traduce identidad en cabeceras que los servicios aceptan solo con el secreto.
+
+---
+
+## Paso 4 — PostgreSQL, Docker Compose, Swagger y diagramas C1/C2
+
+### Persistencia: una instancia PostgreSQL, **una base por servicio**
+- `postgres/init.sql` crea `actividades_db`, `reservas_db` y `keycloak`, cada una con su propio usuario y dueño. Actividades **no puede** leer la base de Reservas ni al revés.
+- **Por qué:** cada servicio es dueño de sus datos (sin joins ni FK entre servicios); si mañana se separan en servidores distintos no cambia el modelo. Una sola instancia reduce infraestructura, que es razonable para este tamaño.
+- **Alternativas consideradas:** (a) esquemas dentro de una misma base: más liviano pero el aislamiento depende de permisos; (b) una base compartida con todas las tablas: simple pero acopla los servicios al mismo modelo; (c) una instancia por servicio: máximo aislamiento, más costo operativo.
+- **Desarrollo y tests:** sin variables de entorno cada servicio usa H2 en memoria (misma configuración, solo cambia `DB_URL`).
+- **Limitación honesta:** `ddl-auto=update` crea/ajusta el esquema solo; en producción corresponde migrar con Flyway/Liquibase. Credenciales de desarrollo en el repo: en producción van como secretos.
+- Reservas guarda `actividadId` sin FK: la integridad entre servicios se resuelve por API (se verifica la actividad antes de reservar), no por la base.
+
+### Docker Compose (`docker-compose.yml`)
+- Servicios: `postgres`, `keycloak`, `actividades`, `reservas`, `gateway`. Open-Meteo queda afuera (API pública), tal como pide el enunciado.
+- **Solo se publican `gateway:8080` y `keycloak:8180`.** Los servicios y la base están en la red interna `turismo`: esa red **es** la zona de confianza (el secreto interno es la segunda barrera).
+- Orden de arranque: `postgres` con healthcheck → servicios (`depends_on: service_healthy`) → gateway.
+- Los Dockerfile (`docker/*.Dockerfile`) son multi-etapa y se construyen desde la raíz: primero `mvn install` de `common-lib` (reproduce el `.m2` local) y luego el servicio lo consume como dependencia Maven. Imagen final solo con JRE.
+- **El problema del `iss` en Docker:** el token lo pide el cliente a `localhost:8180`, así que su `iss` es `http://localhost:8180/realms/turismo`; pero dentro de la red Docker el Gateway llega a Keycloak como `http://keycloak:8080`. Solución: `KC_HOSTNAME=http://localhost:8180` fija el `iss`, el Gateway valida ese `iss` (`KEYCLOAK_ISSUER`) y descarga las claves desde la URL interna (`KEYCLOAK_JWKS`). Si te preguntan por qué hay dos URLs, es esto.
+- Configuración por variables de entorno (`DB_URL`, `ACTIVIDADES_URL`, `GATEWAY_SECRET`…): la misma imagen sirve para cualquier entorno (12-factor).
+
+### Swagger / OpenAPI
+- Cada servicio publica su OpenAPI (springdoc) con el **Gateway como servidor** y esquema Bearer JWT, para que "Try it out" funcione pasando por la seguridad real.
+- El Gateway expone `/docs/actividades` y `/docs/reservas` y un único Swagger UI en `/swagger-ui.html`. La documentación es pública (solo describe); ejecutar operaciones exige token.
+- Los endpoints internos de cupo aparecen documentados pero marcados como INTERNO; el Gateway los bloquea. Los códigos de respuesta (201/400/404/409/422/503) están anotados en las operaciones principales.
+
+### Diagramas C4 (`docs/`)
+- **C1** (`c1-contexto`): turista, administrador, la plataforma y Open-Meteo como sistema externo.
+- **C2** (`c2-contenedores`): los mismos contenedores que levanta el Compose. `common-lib` se dibuja punteado como **dependencia de compilación**, porque no corre como contenedor.
+- Fuente en Mermaid (`.mmd`), regenerar con `mmdc -i docs/c2-contenedores.mmd -o docs/c2-contenedores.png`.
+- El enunciado exige que el C2 coincida con el despliegue: si agregan un componente al Compose, hay que agregarlo al C2.
+
+### Preguntas probables
+- *¿Por qué no una base compartida?* Acoplaría los servicios al mismo modelo y permitiría que uno lea datos del otro, rompiendo la autonomía.
+- *¿Cómo se levanta todo?* `docker compose up --build`; el realm de Keycloak se importa solo.
+- *¿Qué pasa si se reinicia Postgres?* Los datos persisten en el volumen `pgdata`; los servicios reintentan la conexión al reiniciar (en un entorno real se agregaría reintento/health).
+- *¿Por qué `common-lib` se compila dentro del Dockerfile?* Para que el build no dependa de un `.m2` de la máquina del desarrollador y sea reproducible.
+- **No verificado:** el Compose, los Dockerfile y la validación de tokens con Keycloak en Docker no se pudieron ejecutar en el entorno del asistente. Probar `docker compose up --build` y revisar logs antes de la defensa; si el Gateway rechaza tokens, revisar `KEYCLOAK_ISSUER` contra el `iss` del token.
