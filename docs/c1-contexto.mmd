@@ -1,0 +1,9 @@
+flowchart LR
+    tur(["Turista (USUARIO)<br/>consulta, reserva, modifica<br/>y cancela sus reservas"])
+    adm(["Administrador (ADMIN)<br/>gestiona proveedores,<br/>actividades y salidas"])
+    sis["PLATAFORMA DE TURISMO<br/>catálogo de actividades de distintos proveedores<br/>reservas con reglas de temporada, participantes y clima"]
+    om[["Open-Meteo<br/>API pública de pronóstico<br/>(lluvia y viento)"]]
+
+    tur -- "consulta y reserva<br/>HTTPS/JSON + JWT" --> sis
+    adm -- "administra<br/>HTTPS/JSON + JWT" --> sis
+    sis -- "pronóstico del día de la salida<br/>HTTPS/JSON" --> om

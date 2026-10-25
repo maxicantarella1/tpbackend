@@ -6,7 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Import;
 
 @SpringBootApplication
-@Import(ManejadorErroresComun.class)
+@Import({ManejadorErroresComun.class, com.turismo.common.ConfianzaGatewayConfig.class})
 public class ActividadSpringApplication {
 
 	public static void main(String[] args) {

@@ -1,0 +1,27 @@
+flowchart LR
+    cli(["Turista / Administrador<br/>cliente HTTP"])
+    om[["Open-Meteo<br/>API pública de pronóstico<br/>(fuera del despliegue)"]]
+
+    subgraph docker["docker-compose · red interna 'turismo' (zona de confianza)"]
+        direction LR
+        gw["API Gateway :8080<br/>Spring Cloud Gateway + Spring Security<br/>valida JWT · roles · rutea · Swagger UI"]
+        kc["Keycloak :8180<br/>IdP OIDC · roles ADMIN / USUARIO"]
+        act["Servicio de Actividades :8081<br/>Spring Boot 3.2<br/>proveedores · actividades · salidas · cupo"]
+        res["Servicio de Reservas :8082<br/>Spring Boot 3.2<br/>reglas · clima · modificar · reevaluar"]
+        pg[("PostgreSQL 16<br/>actividades_db · reservas_db · keycloak")]
+    end
+
+    lib{{"common-lib.jar<br/>(dependencia Maven en ~/.m2,<br/>no corre como contenedor)"}}
+
+    cli -- "1 · pide token (OIDC)" --> kc
+    cli -- "2 · HTTPS/JSON + Bearer JWT" --> gw
+    gw -- "claves públicas JWKS" --> kc
+    gw -- "/actividades /proveedores<br/>+ X-Internal-Secret, X-User-*" --> act
+    gw -- "/reservas<br/>+ X-Internal-Secret, X-User-*" --> res
+    res -- "consulta actividad · descuenta/devuelve cupo<br/>RestClient" --> act
+    res -- "pronóstico del día<br/>RestClient · HTTPS" --> om
+    act -- JDBC --> pg
+    res -- JDBC --> pg
+    kc -- JDBC --> pg
+    lib -.-> act
+    lib -.-> res
