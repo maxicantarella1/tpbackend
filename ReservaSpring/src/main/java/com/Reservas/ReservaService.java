@@ -1,8 +1,11 @@
 package com.Reservas;
 
 import com.turismo.common.ConflictoNegocioException;
+import com.turismo.common.Nivel;
 import com.turismo.common.ReglaNegocioException;
 import com.turismo.common.ServicioNoDisponibleException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
@@ -11,12 +14,15 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
 import java.time.LocalDate;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 @Service
 public class ReservaService {
+
+    private static final Logger log = LoggerFactory.getLogger(ReservaService.class);
 
     private final ReservaRepository repo;
     private final RestClient actividades;
@@ -28,74 +34,83 @@ public class ReservaService {
         this.clima = clima;
     }
 
+    // ================= casos de uso =================
+
     public Reserva reservar(ReservaRequest req) {
-        // 1. La actividad existe (Actividades es la dueña del dato)
-        ActividadDto actividad = obtenerActividad(req.actividadId());
-
-        // 2. Reglas del dominio: se validan ANTES de tocar el cupo
-        validarTemporada(actividad, req.fecha());
-        if (req.edadMinimaParticipante() < actividad.edadMinima()) {
-            throw new ReglaNegocioException("La actividad exige edad mínima " + actividad.edadMinima()
-                    + " y el participante más joven tiene " + req.edadMinimaParticipante());
+        if (req.edadMaximaParticipante() < req.edadMinimaParticipante()) {
+            throw new ReglaNegocioException("edadMaximaParticipante no puede ser menor que edadMinimaParticipante");
         }
+        ActividadDto a = obtenerActividad(req.actividadId());
 
-        // 3. Clima (API externa): decide si la actividad al aire libre puede realizarse ese día
-        EstadoReserva estado = EstadoReserva.CONFIRMADA;
-        String motivo = null;
-        if (actividad.aireLibre()) {
-            Optional<Pronostico> p = clima.pronostico(actividad.latitud(), actividad.longitud(), req.fecha());
-            if (p.isPresent()) {
-                String problema = problemaClimatico(actividad, p.get());
-                if (problema != null) {
-                    throw new ReglaNegocioException("Actividad inviable ese día: " + problema);
-                }
-            } else {
-                // Sin pronóstico (fecha lejana o API caída): no confirmamos a ciegas
-                estado = EstadoReserva.PENDIENTE;
-                motivo = "Sin pronóstico disponible; se confirma al reevaluar el clima";
-            }
-        }
+        validarReglas(a, req.fecha(), req.edadMinimaParticipante(), req.edadMaximaParticipante(), req.nivelParticipante());
+        EstadoReserva estado = estadoSegunClima(a, req.fecha());
 
-        // 4. Descuento de cupo (atómico, lo decide Actividades)
-        descontarCupo(actividad.id(), req.cantidadPersonas());
+        descontarCupo(a.id(), req.fecha(), req.cantidadPersonas());
 
-        // 5. Guardo mi reserva; si falla, compenso devolviendo el cupo
         Reserva r = new Reserva();
-        r.setActividadId(actividad.id());
+        r.setActividadId(a.id());
         r.setUsuario(req.usuario());
         r.setFecha(req.fecha());
         r.setCantidadPersonas(req.cantidadPersonas());
-        r.setEstado(estado);
-        r.setMotivo(motivo);
+        r.setPrecioTotal(a.precio() * req.cantidadPersonas());
+        r.setEdadMinimaParticipante(req.edadMinimaParticipante());
+        r.setEdadMaximaParticipante(req.edadMaximaParticipante());
+        r.setNivelParticipante(req.nivelParticipante());
+        aplicarEstado(r, estado);
         try {
             return repo.save(r);
         } catch (RuntimeException e) {
-            devolverCupo(actividad.id(), req.cantidadPersonas());
+            devolverCupo(a.id(), req.fecha(), req.cantidadPersonas()); // compensación
             throw e;
         }
     }
 
-    /** Una reserva PENDIENTE (o confirmada) puede volverse viable o inviable al cambiar el pronóstico. */
-    public Reserva reevaluar(Long id) {
+    /**
+     * Modifica fecha y/o cantidad. Se revalidan TODAS las reglas para los nuevos valores.
+     * Primero se toma el cupo nuevo y recién después se libera el viejo, así nunca se pierde el lugar.
+     */
+    public Reserva modificar(Long id, ModificarReservaRequest req) {
         Reserva r = obtener(id);
         if (r.getEstado() == EstadoReserva.CANCELADA) {
-            throw new ConflictoNegocioException("La reserva " + id + " está cancelada");
+            throw new ConflictoNegocioException("La reserva " + id + " está cancelada y no se puede modificar");
         }
-        ActividadDto actividad = obtenerActividad(r.getActividadId());
-        if (!actividad.aireLibre()) return r;
+        LocalDate fechaVieja = r.getFecha();
+        int cantVieja = r.getCantidadPersonas();
+        LocalDate fechaNueva = req.fecha() != null ? req.fecha() : fechaVieja;
+        int cantNueva = req.cantidadPersonas() != null ? req.cantidadPersonas() : cantVieja;
+        boolean teniaCupo = r.getEstado().retieneCupo();
+        if (fechaNueva.equals(fechaVieja) && cantNueva == cantVieja && teniaCupo) return r; // nada que hacer
 
-        Pronostico p = clima.pronostico(actividad.latitud(), actividad.longitud(), r.getFecha())
-                .orElseThrow(() -> new ServicioNoDisponibleException("clima"));
-        String problema = problemaClimatico(actividad, p);
-        if (problema == null) {
-            r.setEstado(EstadoReserva.CONFIRMADA);
-            r.setMotivo(null);
+        ActividadDto a = obtenerActividad(r.getActividadId());
+        validarReglas(a, fechaNueva, r.getEdadMinimaParticipante(), r.getEdadMaximaParticipante(), r.getNivelParticipante());
+        EstadoReserva estadoNuevo = estadoSegunClima(a, fechaNueva);
+
+        // qué hay que tomar y qué hay que soltar de cada salida
+        LocalDate tomarFecha = null, soltarFecha = null;
+        int tomar = 0, soltar = 0;
+        if (teniaCupo && fechaNueva.equals(fechaVieja)) {
+            int delta = cantNueva - cantVieja;
+            if (delta > 0) { tomarFecha = fechaNueva; tomar = delta; }
+            if (delta < 0) { soltarFecha = fechaVieja; soltar = -delta; }
         } else {
-            devolverCupo(r.getActividadId(), r.getCantidadPersonas());
-            r.setEstado(EstadoReserva.CANCELADA);
-            r.setMotivo("Cancelada por clima: " + problema);
+            tomarFecha = fechaNueva; tomar = cantNueva;
+            if (teniaCupo) { soltarFecha = fechaVieja; soltar = cantVieja; }
         }
-        return repo.save(r);
+
+        if (tomar > 0) descontarCupo(a.id(), tomarFecha, tomar);
+        r.setFecha(fechaNueva);
+        r.setCantidadPersonas(cantNueva);
+        r.setPrecioTotal(a.precio() * cantNueva);
+        aplicarEstado(r, estadoNuevo);
+        Reserva guardada;
+        try {
+            guardada = repo.save(r);
+        } catch (RuntimeException e) {
+            if (tomar > 0) devolverCupo(a.id(), tomarFecha, tomar);
+            throw e;
+        }
+        if (soltar > 0) devolverCupo(a.id(), soltarFecha, soltar);
+        return guardada;
     }
 
     public Reserva cancelar(Long id) {
@@ -103,21 +118,80 @@ public class ReservaService {
         if (r.getEstado() == EstadoReserva.CANCELADA) {
             throw new ConflictoNegocioException("La reserva " + id + " ya estaba cancelada");
         }
-        devolverCupo(r.getActividadId(), r.getCantidadPersonas());
+        if (r.getEstado().retieneCupo()) {
+            devolverCupo(r.getActividadId(), r.getFecha(), r.getCantidadPersonas());
+        }
         r.setEstado(EstadoReserva.CANCELADA);
         r.setMotivo("Cancelada por el usuario");
         return repo.save(r);
     }
 
-    public List<Reserva> listar() {
-        return repo.findAll();
+    /** Una reserva válida puede volverse inviable (clima, actividad suspendida): pasa a A_REPROGRAMAR y libera el cupo. */
+    public Reserva reevaluar(Long id) {
+        Reserva r = obtener(id);
+        if (r.getEstado() == EstadoReserva.CANCELADA) {
+            throw new ConflictoNegocioException("La reserva " + id + " está cancelada");
+        }
+        if (r.getEstado() == EstadoReserva.A_REPROGRAMAR) return r; // ya espera una nueva fecha
+
+        ActividadDto a = obtenerActividad(r.getActividadId());
+        if (a.suspendida()) {
+            return pasarAReprogramar(r, "la actividad fue suspendida por el proveedor");
+        }
+        if (!a.aireLibre()) return r;
+
+        Pronostico p = clima.pronostico(a.latitud(), a.longitud(), r.getFecha())
+                .orElseThrow(() -> new ServicioNoDisponibleException("clima"));
+        String problema = problemaClimatico(a, p);
+        if (problema != null) {
+            return pasarAReprogramar(r, problema);
+        }
+        aplicarEstado(r, EstadoReserva.CONFIRMADA);
+        return repo.save(r);
     }
+
+    /** Lo llama la tarea programada. Un error en una reserva no frena a las demás. */
+    public int reevaluarProximas(LocalDate desde, LocalDate hasta) {
+        List<Reserva> candidatas = repo.findByEstadoInAndFechaBetween(
+                EnumSet.of(EstadoReserva.PENDIENTE, EstadoReserva.CONFIRMADA), desde, hasta);
+        int ok = 0;
+        for (Reserva r : candidatas) {
+            try {
+                reevaluar(r.getId());
+                ok++;
+            } catch (RuntimeException e) {
+                log.warn("No se pudo reevaluar la reserva {}: {}", r.getId(), e.getMessage());
+            }
+        }
+        return ok;
+    }
+
+    public List<Reserva> listar() { return repo.findAll(); }
 
     public Reserva obtener(Long id) {
         return repo.findById(id).orElseThrow(() -> new ReservaNoEncontradaException(id));
     }
 
-    // ---------- reglas ----------
+    // ================= reglas (estáticas para poder testearlas sin red) =================
+
+    static void validarReglas(ActividadDto a, LocalDate fecha, int edadMin, int edadMax, Nivel nivel) {
+        if (a.suspendida()) {
+            throw new ReglaNegocioException("La actividad " + a.id() + " está suspendida por el proveedor");
+        }
+        validarTemporada(a, fecha);
+        if (edadMin < a.edadMinima()) {
+            throw new ReglaNegocioException("La actividad exige edad mínima " + a.edadMinima()
+                    + " y el participante más joven tiene " + edadMin);
+        }
+        if (a.edadMaxima() > 0 && edadMax > a.edadMaxima()) {
+            throw new ReglaNegocioException("La actividad admite hasta " + a.edadMaxima()
+                    + " años y hay un participante de " + edadMax);
+        }
+        if (a.nivelRequerido() != null && nivel.compareTo(a.nivelRequerido()) < 0) {
+            throw new ReglaNegocioException("La actividad requiere nivel " + a.nivelRequerido()
+                    + " y el grupo es " + nivel);
+        }
+    }
 
     static void validarTemporada(ActividadDto a, LocalDate fecha) {
         int m = fecha.getMonthValue();
@@ -140,7 +214,32 @@ public class ReservaService {
         return null;
     }
 
-    // ---------- llamadas a Actividades ----------
+    // ================= auxiliares =================
+
+    /** Al crear/modificar: viable -> CONFIRMADA; sin pronóstico -> PENDIENTE; inviable -> 422. */
+    private EstadoReserva estadoSegunClima(ActividadDto a, LocalDate fecha) {
+        if (!a.aireLibre()) return EstadoReserva.CONFIRMADA;
+        Optional<Pronostico> p = clima.pronostico(a.latitud(), a.longitud(), fecha);
+        if (p.isEmpty()) return EstadoReserva.PENDIENTE;
+        String problema = problemaClimatico(a, p.get());
+        if (problema != null) throw new ReglaNegocioException("Actividad inviable ese día: " + problema);
+        return EstadoReserva.CONFIRMADA;
+    }
+
+    private void aplicarEstado(Reserva r, EstadoReserva estado) {
+        r.setEstado(estado);
+        r.setMotivo(estado == EstadoReserva.PENDIENTE
+                ? "Sin pronóstico disponible; se confirma al reevaluar el clima" : null);
+    }
+
+    private Reserva pasarAReprogramar(Reserva r, String motivo) {
+        devolverCupo(r.getActividadId(), r.getFecha(), r.getCantidadPersonas());
+        r.setEstado(EstadoReserva.A_REPROGRAMAR);
+        r.setMotivo("Inviable: " + motivo + ". Modifique la fecha o cancele.");
+        return repo.save(r);
+    }
+
+    // ================= llamadas a Actividades =================
 
     private ActividadDto obtenerActividad(Long id) {
         try {
@@ -152,30 +251,31 @@ public class ReservaService {
         }
     }
 
-    private void devolverCupo(Long id, int cantidad) {
+    private void descontarCupo(Long id, LocalDate fecha, int cantidad) {
         try {
-            actividades.post().uri("/actividades/{id}/cupo/devolucion", id)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(Map.of("cantidad", cantidad))
-                    .retrieve().toBodilessEntity();
-        } catch (RuntimeException ex) {
-            // best-effort: se registra para conciliar a mano; no tapa el error original
-            System.err.println("No se pudo devolver el cupo de la actividad " + id + ": " + ex.getMessage());
-        }
-    }
-
-    private void descontarCupo(Long id, int cantidad) {
-        try {
-            actividades.patch().uri("/actividades/{id}/cupo", id)
+            actividades.patch().uri("/actividades/{id}/salidas/{fecha}/cupo", id, fecha)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(Map.of("cantidad", cantidad))
                     .retrieve().toBodilessEntity();
         } catch (HttpClientErrorException.Conflict e) {
             throw new CupoAgotadoException(id);
         } catch (HttpClientErrorException.NotFound e) {
-            throw new ActividadInexistenteException(id);
+            // la actividad ya se verificó antes: lo que no existe es la salida de ese día
+            throw new ReglaNegocioException("No hay salida programada de la actividad " + id + " el " + fecha);
         } catch (ResourceAccessException | HttpServerErrorException e) {
             throw new ServicioNoDisponibleException("actividades-service");
+        }
+    }
+
+    private void devolverCupo(Long id, LocalDate fecha, int cantidad) {
+        try {
+            actividades.post().uri("/actividades/{id}/salidas/{fecha}/cupo/devolucion", id, fecha)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of("cantidad", cantidad))
+                    .retrieve().toBodilessEntity();
+        } catch (RuntimeException ex) {
+            // best-effort: se registra para conciliar a mano; no tapa el error original
+            log.error("No se pudo devolver cupo: actividad {} fecha {} cantidad {}: {}", id, fecha, cantidad, ex.getMessage());
         }
     }
 }

@@ -1,5 +1,7 @@
 package com.Reservas;
 
+import com.turismo.common.Nivel;
+import com.turismo.common.ReglaNegocioException;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -55,15 +57,39 @@ class ClimaClientTest {
         assertTrue(cliente.pronostico(0, 0, LocalDate.of(2026, 11, 1)).isEmpty());
     }
 
+    private ActividadDto act(int edadMin, int edadMax, Nivel nivel, String estado) {
+        return new ActividadDto(1L, "Trekking", 100, 0, 0, 40, 30, true, edadMin, edadMax, nivel, estado, 11, 3); // nov-mar
+    }
+
     @Test
     void reglasDeTemporadaYClima() {
-        var a = new ActividadDto(1L, "Trekking", 5, 0, 0, 40, 30, true, 12, 11, 3); // nov-mar
+        var a = act(12, 0, Nivel.PRINCIPIANTE, "ACTIVA");
         ReservaService.validarTemporada(a, LocalDate.of(2026, 12, 10));
         ReservaService.validarTemporada(a, LocalDate.of(2027, 2, 10));
-        assertThrows(com.turismo.common.ReglaNegocioException.class,
+        assertThrows(ReglaNegocioException.class,
                 () -> ReservaService.validarTemporada(a, LocalDate.of(2026, 6, 10)));
         assertNull(ReservaService.problemaClimatico(a, new Pronostico(40, 30)));
         assertNotNull(ReservaService.problemaClimatico(a, new Pronostico(41, 10)));
         assertNotNull(ReservaService.problemaClimatico(a, new Pronostico(0, 31)));
+    }
+
+    @Test
+    void reglasDeParticipantesYEstado() {
+        LocalDate f = LocalDate.of(2026, 12, 10);
+        var a = act(12, 60, Nivel.INTERMEDIO, "ACTIVA");
+        ReservaService.validarReglas(a, f, 12, 60, Nivel.INTERMEDIO);                     // ok
+        assertThrows(ReglaNegocioException.class, () -> ReservaService.validarReglas(a, f, 11, 40, Nivel.AVANZADO));      // muy chico
+        assertThrows(ReglaNegocioException.class, () -> ReservaService.validarReglas(a, f, 20, 61, Nivel.AVANZADO));      // muy grande
+        assertThrows(ReglaNegocioException.class, () -> ReservaService.validarReglas(a, f, 20, 40, Nivel.PRINCIPIANTE));  // poco nivel
+        var suspendida = act(0, 0, Nivel.PRINCIPIANTE, "SUSPENDIDA");
+        assertThrows(ReglaNegocioException.class, () -> ReservaService.validarReglas(suspendida, f, 20, 30, Nivel.AVANZADO));
+    }
+
+    @Test
+    void soloPendienteYConfirmadaRetienenCupo() {
+        assertTrue(EstadoReserva.PENDIENTE.retieneCupo());
+        assertTrue(EstadoReserva.CONFIRMADA.retieneCupo());
+        assertFalse(EstadoReserva.A_REPROGRAMAR.retieneCupo());
+        assertFalse(EstadoReserva.CANCELADA.retieneCupo());
     }
 }

@@ -19,15 +19,15 @@
 - **¿Por qué 409 y no 400/422?** El pedido es válido pero choca con el estado actual del recurso (sin cupo).
 - **¿Por qué Reservas guarda solo `actividadId`?** Cada servicio es dueño de sus datos; no hay claves foráneas entre servicios.
 
-### Cómo compilar y probar
+### Cómo compilar y probar (actualizado en el paso 2b)
 ```
 cd common-lib && mvn clean install
 cd ../actividadSpring && mvn spring-boot:run   # :8081
 cd ../ReservaSpring && mvn spring-boot:run     # :8082
-curl -X POST localhost:8081/actividades -H 'Content-Type: application/json' \
-  -d '{"nombre":"Trekking","latitud":-31.4,"longitud":-64.2,"cupoDisponible":5,"precio":100,"maxProbLluvia":40,"maxVientoKmh":30}'
-curl -X POST localhost:8082/reservas -H 'Content-Type: application/json' \
-  -d '{"actividadId":1,"usuario":"ana","fecha":"2026-12-01","cantidadPersonas":2}'
+curl -X POST localhost:8081/proveedores -H 'Content-Type: application/json' -d '{"nombre":"Sierras Aventura","email":"a@b.com"}'
+curl -X POST localhost:8081/actividades -H 'Content-Type: application/json' -d '{"nombre":"Trekking","proveedorId":1,"latitud":-31.4,"longitud":-64.2,"capacidadPorSalida":5,"precio":100,"maxProbLluvia":40,"maxVientoKmh":30,"edadMinima":12,"nivelRequerido":"PRINCIPIANTE","mesInicio":1,"mesFin":12}'
+curl -X POST localhost:8081/actividades/1/salidas -H 'Content-Type: application/json' -d '{"fecha":"2026-12-01"}'
+curl -X POST localhost:8082/reservas -H 'Content-Type: application/json' -d '{"actividadId":1,"usuario":"ana","fecha":"2026-12-01","cantidadPersonas":2,"edadMinimaParticipante":20,"edadMaximaParticipante":35,"nivelParticipante":"PRINCIPIANTE"}'
 ```
 Nota: estos cambios no se pudieron compilar en el entorno de trabajo (Maven Central bloqueado); compilar localmente antes de seguir.
 
@@ -61,3 +61,30 @@ Nota: estos cambios no se pudieron compilar en el entorno de trabajo (Maven Cent
 - **¿Cómo lo testeaste?** `ClimaClientTest` usa `MockRestServiceServer` (respuesta OK, 500, JSON inesperado) y prueba las reglas de temporada/clima sin red.
 - **Limitación honesta:** no se pudo compilar ni correr los tests en el entorno de desarrollo del asistente (Maven Central bloqueado). Correr `mvn test` en Reservas antes de la defensa.
 - **Datos de prueba nuevos de Actividad:** `aireLibre`, `edadMinima`, `mesInicio`, `mesFin` (ver ejemplo de POST actualizado: agregar esos campos).
+
+---
+
+## Paso 2b — Dominio completo (proveedores, salidas por fecha, modificar, scheduler)
+
+### Qué se agregó y por qué
+| Cambio | Motivo / cómo se defiende |
+|---|---|
+| **Salida** (actividad + fecha + cupo) | Antes el cupo era global por actividad: reservar el 1/12 le quitaba lugares al 2/12. El cupo es de la *salida*. Es el modelo real de una excursión (una oferta por fecha). Restricción única (actividad, fecha). |
+| **Proveedor** + `proveedorId` en Actividad | El anexo: actividades "ofrecidas por distintos proveedores". No se usa FK a otro servicio; es el mismo servicio, y se valida que exista y esté activo. |
+| **Estado de actividad** (ACTIVA/SUSPENDIDA) + `PATCH /actividades/{id}/estado` | El proveedor puede suspender. Reservar en una suspendida → 422; las reservas existentes pasan a A_REPROGRAMAR al reevaluar. |
+| `PUT /actividades/{id}`, borrar con 409 si tiene salidas | Edición completa; no se borra lo que tiene historial (se suspende). |
+| **Participantes:** edad mínima y máxima, `nivelRequerido` vs `nivelParticipante` (enum `Nivel` en common-lib) | Característica de los participantes pedida por el anexo. El enum compartido justifica el JAR común. |
+| **Estado A_REPROGRAMAR** | Reserva válida que se vuelve inviable: libera el cupo pero NO se pierde la reserva; el usuario elige nueva fecha (`PATCH /reservas/{id}`) o cancela. Mejor que cancelar solo. |
+| **Modificar reserva** (`PATCH /reservas/{id}`: fecha y/o cantidad) | Revalida todas las reglas con los nuevos valores. Primero toma el cupo nuevo y después libera el viejo (nunca se pierde el lugar); en la misma fecha ajusta solo la diferencia. |
+| **Tarea programada** (`ReevaluadorClima`, `@Scheduled`) | Cada hora (configurable) reevalúa reservas PENDIENTE/CONFIRMADA de los próximos 7 días; un error en una no frena a las demás. |
+| **Precio total** = precio × personas | Se calcula al reservar y al modificar. |
+
+### Preguntas probables
+- **¿Por qué la salida es una entidad y no un campo?** Porque el cupo depende de la fecha; con una tabla de salidas el descuento atómico es por (actividad, fecha).
+- **¿Quién crea las salidas?** El proveedor/admin con `POST /actividades/{id}/salidas`. Reservar una fecha sin salida → 422.
+- **¿Qué pasa si dos usuarios reservan el último lugar?** El `UPDATE ... WHERE cupo >= n` es atómico: uno gana (204) y el otro recibe 409.
+- **¿Por qué A_REPROGRAMAR y no CANCELADA?** El usuario no tiene la culpa; se conserva la reserva para reprogramar. Libera el cupo para no bloquear una fecha inviable.
+- **¿Qué pasa si falla la modificación a mitad de camino?** Se compensa devolviendo el cupo recién tomado. Limitación: la devolución es best-effort (se loguea); una saga/outbox sería el siguiente nivel.
+- **¿Por qué el scheduler está en Reservas?** Es el dueño del ciclo de vida de la reserva; consulta a Actividades y al clima. Con varias instancias habría que evitar ejecuciones duplicadas (ShedLock); hoy es una sola instancia.
+- **Limitación honesta:** `modificar` en la misma fecha con aumento de cantidad toma solo la diferencia; si esa llamada tiene éxito y luego falla el guardado, se devuelve esa diferencia.
+- Tests: `ClimaClientTest` cubre reglas de participantes, temporada, suspendida, clima y estados que retienen cupo. Faltan tests de servicio con `MockRestServiceServer` sobre `modificar`/`reevaluar` (pendiente).

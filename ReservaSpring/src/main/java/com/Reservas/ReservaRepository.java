@@ -2,4 +2,10 @@ package com.Reservas;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 
-public interface ReservaRepository extends JpaRepository<Reserva, Long> { }
+import java.time.LocalDate;
+import java.util.Collection;
+import java.util.List;
+
+public interface ReservaRepository extends JpaRepository<Reserva, Long> {
+    List<Reserva> findByEstadoInAndFechaBetween(Collection<EstadoReserva> estados, LocalDate desde, LocalDate hasta);
+}
