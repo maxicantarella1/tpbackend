@@ -88,3 +88,81 @@ Nota: estos cambios no se pudieron compilar en el entorno de trabajo (Maven Cent
 - **¿Por qué el scheduler está en Reservas?** Es el dueño del ciclo de vida de la reserva; consulta a Actividades y al clima. Con varias instancias habría que evitar ejecuciones duplicadas (ShedLock); hoy es una sola instancia.
 - **Limitación honesta:** `modificar` en la misma fecha con aumento de cantidad toma solo la diferencia; si esa llamada tiene éxito y luego falla el guardado, se devuelve esa diferencia.
 - Tests: `ClimaClientTest` cubre reglas de participantes, temporada, suspendida, clima y estados que retienen cupo. Faltan tests de servicio con `MockRestServiceServer` sobre `modificar`/`reevaluar` (pendiente).
+
+---
+
+## Paso 3 — API Gateway, Keycloak (OIDC/JWT) y zona de confianza
+
+### Arquitectura de seguridad (qué decidimos)
+```
+Cliente --(Bearer JWT)--> API Gateway :8080 --(X-Internal-Secret + X-User-Name + X-User-Roles)--> Actividades :8081
+                              |                                                              \--> Reservas :8082 --(X-Internal-Secret)--> Actividades
+                              \-- valida JWT contra Keycloak :8180 (realm "turismo")
+```
+- **Keycloak** es el IdP (OIDC). Emite JWT con los roles de realm `ADMIN` y `USUARIO` en `realm_access.roles`. Realm importable: `keycloak/realm-turismo.json` (usuarios `admin/admin`, `ana/ana`, `pedro/pedro`).
+- **Gateway = punto de entrada y Security Filter** (`SecurityConfig`, Spring Security WebFlux como Resource Server): autentica el JWT (firma, emisor, expiración) y autoriza **por ruta y método** según el rol. Todo lo que no está listado se **deniega** (`anyExchange().denyAll()`).
+- **Zona de confianza = Gateway + microservicios + red interna.** Los servicios NO validan JWT; confían en el Gateway. Mecanismos que lo sostienen:
+  1. En Docker solo se publica el puerto del Gateway (y Keycloak); los servicios no son alcanzables desde afuera (se configura en el paso de despliegue).
+  2. **Secreto interno** (`X-Internal-Secret`): el `ConfianzaGatewayFilter` (en el JAR común) devuelve 403 a todo pedido que no lo traiga. Es una segunda barrera por si alguien llegara al puerto del servicio. Reservas lo reenvía al llamar a Actividades.
+  3. El Gateway **borra** cualquier `X-User-*`/`X-Internal-Secret` que mande el cliente y los reescribe desde el JWT (`IdentidadFilter`): no se puede suplantar identidad.
+- **Autorización en dos niveles:** el **Gateway** decide por *rol* (¿puede este rol llamar a esta ruta?); el **servicio** decide por *dato* (¿esta reserva es tuya?). Eso último no lo puede saber el Gateway.
+
+### Tabla de permisos
+| Operación | Anónimo | USUARIO | ADMIN |
+|---|---|---|---|
+| `GET /actividades/**` (catálogo, salidas) | sí | sí | sí |
+| `POST/PUT/PATCH/DELETE /actividades/**`, `/proveedores/**` | no (401) | no (403) | sí |
+| `POST /reservas` | no | sí (a su nombre) | sí (a nombre de otro) |
+| `GET/PATCH /reservas/{id}`, `POST .../cancelar` | no | solo las suyas (403 si es ajena) | todas |
+| `GET /reservas` | no | solo las suyas | todas |
+| `POST /reservas/{id}/reevaluar` | no | no (403) | sí |
+| `/actividades/*/salidas/*/cupo/**` (interno) | **denegado a todos** desde afuera | | |
+
+### Por qué (justificaciones)
+- **¿Por qué el Gateway valida el token y no cada servicio?** Un solo lugar para autenticación y reglas de rol (apunte 19): menos código repetido, un solo punto de cambio, menos superficie de exposición. Costo: los servicios dependen de que nadie los alcance sin pasar por el Gateway → por eso las barreras 1 y 2.
+- **¿Por qué no JWT también en los servicios (defensa en profundidad)?** Es la alternativa más estricta (cada servicio como Resource Server + propagar el token o usar client credentials para las llamadas internas y el scheduler). La descartamos por complejidad y porque el scheduler de Reservas llamaría a Actividades sin usuario. Queda como mejora documentada.
+- **¿Qué pasa si alguien llama directo al servicio?** 403 por el filtro de confianza (sin secreto). Si además tuviera el secreto, podría falsificar `X-User-Name`: por eso el secreto es de entorno (`GATEWAY_SECRET`), no va en el código y el puerto no se publica. Limitación reconocida: el secreto compartido no es tan fuerte como mTLS o JWT interno.
+- **¿Por qué se bloquean los endpoints de cupo en el Gateway?** Son operaciones internas entre servicios: si se expusieran, un usuario podría "regalarse" cupo o vaciarlo. Solo Reservas debe llamarlos (red interna).
+- **¿Por qué el catálogo es público?** Un turista debe poder ver actividades antes de registrarse; solo lectura.
+- **¿Por qué `usuario` sale del token y no del body?** Si saliera del body, un USUARIO reservaría a nombre de otro. El body solo se respeta para ADMIN.
+- **¿Por qué 403 y no 404 al pedir una reserva ajena?** Es una decisión; 404 ocultaría su existencia. Elegimos 403 por claridad; se puede cambiar.
+- **¿CSRF deshabilitado?** Sí: la API es stateless, sin cookies ni sesión; la autenticación es un Bearer token que el navegador no adjunta solo.
+- **¿Qué hace el rol en el JWT?** Keycloak lo pone en `realm_access.roles`; `SecurityConfig.rolesDeRealm` lo convierte a `ROLE_ADMIN`/`ROLE_USUARIO` para `hasRole(...)`.
+- **¿Qué pasa si Keycloak está caído?** Con `jwk-set-uri` el Gateway valida los tokens vigentes con las claves ya cacheadas; no se pueden emitir tokens nuevos (login) hasta que vuelva. Los endpoints públicos siguen andando.
+- **JAR común:** ahora aporta además `Seguridad` (nombres de cabeceras), `Identidad`, `ConfianzaGatewayFilter` y `AccesoDenegadoException` (403), usados por los dos servicios.
+
+### Cómo probarlo (sin Docker completo)
+```
+docker compose -f docker-compose.keycloak.yml up -d          # Keycloak en :8180
+cd common-lib && mvn clean install
+cd ../actividadSpring && mvn spring-boot:run                  # :8081
+cd ../ReservaSpring && mvn spring-boot:run                    # :8082
+cd ../api-gateway && mvn spring-boot:run                      # :8080
+
+TOKEN_ADMIN=$(curl -s -d client_id=turismo-client -d username=admin -d password=admin -d grant_type=password \
+  http://localhost:8180/realms/turismo/protocol/openid-connect/token | jq -r .access_token)
+TOKEN_ANA=$(curl -s -d client_id=turismo-client -d username=ana -d password=ana -d grant_type=password \
+  http://localhost:8180/realms/turismo/protocol/openid-connect/token | jq -r .access_token)
+
+# catálogo público
+curl localhost:8080/actividades
+# ADMIN crea proveedor, actividad y salida (USUARIO recibe 403)
+curl -X POST localhost:8080/proveedores -H "Authorization: Bearer $TOKEN_ADMIN" -H 'Content-Type: application/json' -d '{"nombre":"Sierras Aventura","email":"a@b.com"}'
+# ANA reserva (se guarda a su nombre) / sin token: 401 / ajena: 403
+curl -X POST localhost:8080/reservas -H "Authorization: Bearer $TOKEN_ANA" -H 'Content-Type: application/json' \
+  -d '{"actividadId":1,"fecha":"2026-12-01","cantidadPersonas":2,"edadMinimaParticipante":20,"edadMaximaParticipante":35,"nivelParticipante":"PRINCIPIANTE"}'
+# acceso directo al servicio: 403
+curl -i localhost:8081/actividades
+```
+Los ejemplos de `curl` directos a :8081/:8082 de pasos anteriores ahora dan 403 salvo que se envíe `-H 'X-Internal-Secret: dev-secret'` (para depurar un servicio aislado).
+
+### Tests
+- `ReservaServiceTest` (Mockito + `MockRestServiceServer`): reservar (confirmada, pendiente, clima inviable sin tocar cupo, suspendida, cupo agotado, compensación), reevaluar (a reprogramar, confirmar, suspendida, sin pronóstico, el scheduler no se detiene ante un error), modificar (cambio de fecha, solo diferencia, desde A_REPROGRAMAR, sin perder el lugar viejo), cancelar y propiedad de reservas.
+- `SecurityConfigTest` (Gateway): 401 sin token, 403 por rol, endpoints internos bloqueados incluso para ADMIN, rutas desconocidas denegadas.
+- Pendiente: probar de punta a punta con Keycloak real; verificar en jwt.io que el token trae `realm_access.roles`. **No se pudo compilar ni ejecutar nada en el entorno del asistente** (Maven Central bloqueado): correr `mvn test` en `ReservaSpring` y `api-gateway` antes de la defensa.
+
+### Preguntas probables
+- *Diferencia autenticación / autorización:* quién sos (JWT firmado por Keycloak) vs qué podés hacer (roles + dueño del recurso).
+- *¿Qué contiene el JWT?* header, payload (iss, exp, preferred_username, realm_access.roles) y firma RS256; se valida con las claves públicas del JWKS de Keycloak.
+- *¿Por qué RestClient y no Feign/RestTemplate?* Es el cliente recomendado en Spring 6.1+/Boot 3.2 (apunte 18).
+- *¿Qué es el trusted zone en tu solución?* Gateway + servicios en la red interna; el Gateway es el único con acceso externo y el que traduce identidad en cabeceras que los servicios aceptan solo con el secreto.
