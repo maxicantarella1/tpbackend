@@ -23,6 +23,12 @@ public class ManejadorErroresComun {
                 .body(ErrorResponse.of(HttpStatus.CONFLICT, e.getMessage()));
     }
 
+    @ExceptionHandler(AccesoDenegadoException.class)
+    public ResponseEntity<ErrorResponse> denegado(AccesoDenegadoException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ErrorResponse.of(HttpStatus.FORBIDDEN, e.getMessage()));
+    }
+
     @ExceptionHandler(ReglaNegocioException.class)
     public ResponseEntity<ErrorResponse> reglaIncumplida(ReglaNegocioException e) {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)

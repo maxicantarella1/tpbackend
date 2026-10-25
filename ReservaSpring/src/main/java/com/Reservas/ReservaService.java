@@ -1,6 +1,8 @@
 package com.Reservas;
 
+import com.turismo.common.AccesoDenegadoException;
 import com.turismo.common.ConflictoNegocioException;
+import com.turismo.common.Identidad;
 import com.turismo.common.Nivel;
 import com.turismo.common.ReglaNegocioException;
 import com.turismo.common.ServicioNoDisponibleException;
@@ -36,9 +38,14 @@ public class ReservaService {
 
     // ================= casos de uso =================
 
-    public Reserva reservar(ReservaRequest req) {
+    public Reserva reservar(ReservaRequest req, Identidad quien) {
         if (req.edadMaximaParticipante() < req.edadMinimaParticipante()) {
             throw new ReglaNegocioException("edadMaximaParticipante no puede ser menor que edadMinimaParticipante");
+        }
+        // un USUARIO solo reserva a su nombre (se toma del token, no del body); un ADMIN puede reservar a nombre de otro
+        String usuario = (!quien.admin() && quien.usuario() != null) ? quien.usuario() : req.usuario();
+        if (usuario == null || usuario.isBlank()) {
+            throw new ReglaNegocioException("usuario es obligatorio");
         }
         ActividadDto a = obtenerActividad(req.actividadId());
 
@@ -49,7 +56,7 @@ public class ReservaService {
 
         Reserva r = new Reserva();
         r.setActividadId(a.id());
-        r.setUsuario(req.usuario());
+        r.setUsuario(usuario);
         r.setFecha(req.fecha());
         r.setCantidadPersonas(req.cantidadPersonas());
         r.setPrecioTotal(a.precio() * req.cantidadPersonas());
@@ -69,8 +76,8 @@ public class ReservaService {
      * Modifica fecha y/o cantidad. Se revalidan TODAS las reglas para los nuevos valores.
      * Primero se toma el cupo nuevo y recién después se libera el viejo, así nunca se pierde el lugar.
      */
-    public Reserva modificar(Long id, ModificarReservaRequest req) {
-        Reserva r = obtener(id);
+    public Reserva modificar(Long id, ModificarReservaRequest req, Identidad quien) {
+        Reserva r = obtenerPropia(id, quien);
         if (r.getEstado() == EstadoReserva.CANCELADA) {
             throw new ConflictoNegocioException("La reserva " + id + " está cancelada y no se puede modificar");
         }
@@ -113,8 +120,8 @@ public class ReservaService {
         return guardada;
     }
 
-    public Reserva cancelar(Long id) {
-        Reserva r = obtener(id);
+    public Reserva cancelar(Long id, Identidad quien) {
+        Reserva r = obtenerPropia(id, quien);
         if (r.getEstado() == EstadoReserva.CANCELADA) {
             throw new ConflictoNegocioException("La reserva " + id + " ya estaba cancelada");
         }
@@ -166,7 +173,18 @@ public class ReservaService {
         return ok;
     }
 
-    public List<Reserva> listar() { return repo.findAll(); }
+    public List<Reserva> listar(Identidad quien) {
+        return (quien.admin() || quien.usuario() == null) ? repo.findAll() : repo.findByUsuario(quien.usuario());
+    }
+
+    /** Un USUARIO solo ve/modifica/cancela SUS reservas; ADMIN y llamadas internas sin usuario, todas. */
+    public Reserva obtenerPropia(Long id, Identidad quien) {
+        Reserva r = obtener(id);
+        if (!quien.admin() && quien.usuario() != null && !quien.usuario().equals(r.getUsuario())) {
+            throw new AccesoDenegadoException("La reserva " + id + " pertenece a otro usuario");
+        }
+        return r;
+    }
 
     public Reserva obtener(Long id) {
         return repo.findById(id).orElseThrow(() -> new ReservaNoEncontradaException(id));

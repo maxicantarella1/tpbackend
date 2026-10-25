@@ -17,8 +17,11 @@ public class ClientesConfig {
     }
 
     @Bean
-    RestClient actividadesClient(@Value("${actividades.url}") String url) {
-        return RestClient.builder().baseUrl(url).requestFactory(factory(2000, 3000)).build();
+    RestClient actividadesClient(@Value("${actividades.url}") String url,
+                                 @Value("${seguridad.gateway-secret:}") String secreto) {
+        RestClient.Builder b = RestClient.builder().baseUrl(url).requestFactory(factory(2000, 3000));
+        if (!secreto.isBlank()) b.defaultHeader(com.turismo.common.Seguridad.HEADER_SECRET, secreto); // zona de confianza
+        return b.build();
     }
 
     @Bean

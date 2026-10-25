@@ -7,5 +7,6 @@ import java.util.Collection;
 import java.util.List;
 
 public interface ReservaRepository extends JpaRepository<Reserva, Long> {
+    List<Reserva> findByUsuario(String usuario);
     List<Reserva> findByEstadoInAndFechaBetween(Collection<EstadoReserva> estados, LocalDate desde, LocalDate hasta);
 }
