@@ -23,6 +23,12 @@ public class ManejadorErroresComun {
                 .body(ErrorResponse.of(HttpStatus.CONFLICT, e.getMessage()));
     }
 
+    @ExceptionHandler(ReglaNegocioException.class)
+    public ResponseEntity<ErrorResponse> reglaIncumplida(ReglaNegocioException e) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(ErrorResponse.of(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage()));
+    }
+
     @ExceptionHandler(ServicioNoDisponibleException.class)
     public ResponseEntity<ErrorResponse> noDisponible(ServicioNoDisponibleException e) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)

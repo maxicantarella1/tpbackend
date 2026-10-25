@@ -22,6 +22,21 @@ public class ReservaController {
         return service.reservar(req);
     }
 
+    @PatchMapping("/{id}")
+    public Reserva modificar(@PathVariable Long id, @Valid @RequestBody ModificarReservaRequest req) {
+        return service.modificar(id, req);
+    }
+
+    @PostMapping("/{id}/cancelar")
+    public Reserva cancelar(@PathVariable Long id) {
+        return service.cancelar(id);
+    }
+
+    @PostMapping("/{id}/reevaluar")
+    public Reserva reevaluar(@PathVariable Long id) {
+        return service.reevaluar(id);
+    }
+
     @GetMapping
     public List<Reserva> listar() {
         return service.listar();

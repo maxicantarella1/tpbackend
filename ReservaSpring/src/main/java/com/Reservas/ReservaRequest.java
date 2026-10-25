@@ -1,5 +1,6 @@
 package com.Reservas;
 
+import com.turismo.common.Nivel;
 import jakarta.validation.constraints.FutureOrPresent;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -12,4 +13,7 @@ public record ReservaRequest(
         @NotNull Long actividadId,
         @NotBlank String usuario,
         @NotNull @FutureOrPresent LocalDate fecha,
-        @Min(1) int cantidadPersonas) { }
+        @Min(1) int cantidadPersonas,
+        @Min(0) int edadMinimaParticipante,   // edad del participante más joven
+        @Min(0) int edadMaximaParticipante,   // edad del participante de más edad
+        @NotNull Nivel nivelParticipante) { }  // experiencia del grupo (la del menos experimentado)
