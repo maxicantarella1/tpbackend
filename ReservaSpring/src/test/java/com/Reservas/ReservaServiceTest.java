@@ -5,6 +5,7 @@ import com.turismo.common.ConflictoNegocioException;
 import com.turismo.common.Identidad;
 import com.turismo.common.Nivel;
 import com.turismo.common.ReglaNegocioException;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
@@ -46,7 +47,7 @@ class ReservaServiceTest {
         clima = mock(ClimaClient.class);
         RestClient.Builder b = RestClient.builder().baseUrl(BASE);
         server = MockRestServiceServer.bindTo(b).ignoreExpectOrder(true).build();
-        service = new ReservaService(repo, b.build(), clima);
+        service = new ReservaService(repo, b.build(), clima, CircuitBreakerRegistry.ofDefaults());
     }
 
     // ---------- helpers ----------
@@ -322,5 +323,23 @@ class ReservaServiceTest {
         when(repo.findAll()).thenReturn(List.of(new Reserva(), new Reserva()));
         assertEquals(1, service.listar(ANA).size());
         assertEquals(2, service.listar(ADMIN).size());
+    }
+
+    @Test
+    void conActividadesCaidaElCircuitoAbreYFallaRapido() {
+        var cfg = io.github.resilience4j.circuitbreaker.CircuitBreakerConfig.custom()
+                .slidingWindowSize(4).minimumNumberOfCalls(2).failureRateThreshold(50)
+                .waitDurationInOpenState(java.time.Duration.ofMinutes(5)).build();
+        RestClient.Builder b = RestClient.builder().baseUrl(BASE);
+        server = MockRestServiceServer.bindTo(b).build();
+        var svc = new ReservaService(repo, b.build(), clima, CircuitBreakerRegistry.of(cfg));
+        // solo 2 llamadas reales llegan al servidor; la 3ª y 4ª las corta el circuito
+        server.expect(org.springframework.test.web.client.ExpectedCount.times(2), requestTo(BASE + "/actividades/1"))
+                .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR));
+
+        for (int i = 0; i < 4; i++) {
+            assertThrows(com.turismo.common.ServicioNoDisponibleException.class, () -> svc.reservar(req(F1, 1), ANA));
+        }
+        server.verify();
     }
 }

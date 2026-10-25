@@ -6,6 +6,11 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+
+import java.time.Duration;
+
 @Configuration
 public class ClientesConfig {
 
@@ -27,5 +32,24 @@ public class ClientesConfig {
     @Bean
     RestClient climaRestClient(@Value("${clima.url}") String url) {
         return RestClient.builder().baseUrl(url).requestFactory(factory(2000, 3000)).build();
+    }
+
+    /**
+     * Circuit breaker: tras demasiados fallos seguidos "abre" y responde rápido sin llamar al servicio caído;
+     * pasado el tiempo de espera deja pasar unas pocas llamadas de prueba (half-open) y si andan, vuelve a cerrar.
+     */
+    @Bean
+    CircuitBreakerRegistry circuitBreakerRegistry(
+            @Value("${resiliencia.ventana:10}") int ventana,
+            @Value("${resiliencia.minimo-llamadas:5}") int minimoLlamadas,
+            @Value("${resiliencia.umbral-fallos:50}") float umbralFallos,
+            @Value("${resiliencia.espera-abierto-seg:30}") long esperaAbiertoSeg) {
+        return CircuitBreakerRegistry.of(CircuitBreakerConfig.custom()
+                .slidingWindowSize(ventana)
+                .minimumNumberOfCalls(minimoLlamadas)
+                .failureRateThreshold(umbralFallos)
+                .waitDurationInOpenState(Duration.ofSeconds(esperaAbiertoSeg))
+                .permittedNumberOfCallsInHalfOpenState(2)
+                .build());
     }
 }

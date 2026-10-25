@@ -204,3 +204,24 @@ Los ejemplos de `curl` directos a :8081/:8082 de pasos anteriores ahora dan 403 
 - *¿Qué pasa si se reinicia Postgres?* Los datos persisten en el volumen `pgdata`; los servicios reintentan la conexión al reiniciar (en un entorno real se agregaría reintento/health).
 - *¿Por qué `common-lib` se compila dentro del Dockerfile?* Para que el build no dependa de un `.m2` de la máquina del desarrollador y sea reproducible.
 - **No verificado:** el Compose, los Dockerfile y la validación de tokens con Keycloak en Docker no se pudieron ejecutar en el entorno del asistente. Probar `docker compose up --build` y revisar logs antes de la defensa; si el Gateway rechaza tokens, revisar `KEYCLOAK_ISSUER` contra el `iss` del token.
+
+---
+
+## Paso 5 — Circuit breaker (Resilience4j)
+
+### Qué hace y dónde
+- **Qué es:** si un servicio del que dependemos falla varias veces seguidas, el circuito se **abre**: durante un tiempo dejamos de llamarlo y respondemos enseguida (falla rápida) en vez de esperar un timeout cada vez. Pasado ese tiempo pasa a **half-open**: deja pasar 2 llamadas de prueba; si andan, **cierra**; si fallan, vuelve a abrir.
+- **Dónde:** dos circuitos en Reservas.
+  1. `clima` (en `ClimaClient`): circuito abierto → `Optional.empty()` → la reserva queda PENDIENTE (mismo comportamiento degradado que ya teníamos, pero sin esperar 3 s por intento).
+  2. `actividades` (en `ReservaService.protegida`): circuito abierto → `ServicioNoDisponibleException` → **503** inmediato.
+- **Qué cuenta como fallo y qué no (decisión importante):** cuentan caídas, timeouts, 5xx y respuestas con cuerpo inesperado. **No** cuentan los 4xx: un 404/409 de Actividades es una respuesta de negocio de un servicio sano (cupo agotado), y un 400 de Open-Meteo para una fecha fuera del pronóstico no es una caída. Si contaran, unos pocos "sin cupo" abrirían el circuito y bloquearían reservas válidas.
+- **Parámetros** (`application.properties`): ventana de 10 llamadas, se evalúa desde la 5ª, abre con ≥50 % de fallos, espera 30 s abierto, 2 llamadas de prueba. Se pueden cambiar sin recompilar (variables `resiliencia.*`).
+- **Por qué librería directa y no el starter con anotaciones:** menos magia (sin AOP ni autoconfiguración), el código muestra exactamente qué se protege y se prueba fácil.
+
+### Preguntas probables
+- *¿Qué diferencia hay entre timeout y circuit breaker?* El timeout limita **una** llamada; el circuit breaker aprende del historial y evita hacer llamadas inútiles. Se usan juntos: el timeout detecta la falla, el circuito corta la repetición.
+- *¿Qué pasa con las reservas mientras el circuito de clima está abierto?* Se crean PENDIENTES (con cupo retenido) y la tarea programada las reevalúa cuando haya pronóstico.
+- *¿Y si Actividades está caída?* 503 rápido. No se guarda nada: ni cupo ni reserva.
+- *¿Por qué no reintentos (retry)?* Reintentar un descuento de cupo puede duplicarlo si la primera llamada sí llegó; no es idempotente. Para llamadas de solo lectura se podría agregar.
+- *Limitación:* el estado del circuito es por instancia (en memoria); con varias réplicas cada una tendría el suyo.
+- Tests: `ClimaClientTest` (abre con 500, abre con cuerpo inesperado, no abre con 400) y `ReservaServiceTest` (abre con Actividades caída y las llamadas siguientes no llegan al servidor).

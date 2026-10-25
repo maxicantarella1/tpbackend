@@ -6,6 +6,10 @@ import com.turismo.common.Identidad;
 import com.turismo.common.Nivel;
 import com.turismo.common.ReglaNegocioException;
 import com.turismo.common.ServicioNoDisponibleException;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -20,6 +24,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 @Service
 public class ReservaService {
@@ -29,11 +34,26 @@ public class ReservaService {
     private final ReservaRepository repo;
     private final RestClient actividades;
     private final ClimaClient clima;
+    private final CircuitBreaker circuitoActividades;
 
-    public ReservaService(ReservaRepository repo, RestClient actividadesClient, ClimaClient clima) {
+    public ReservaService(ReservaRepository repo, RestClient actividadesClient, ClimaClient clima,
+                          CircuitBreakerRegistry registry) {
         this.repo = repo;
         this.actividades = actividadesClient;
         this.clima = clima;
+        // los 4xx (404, 409...) son respuestas de NEGOCIO del servicio sano: no cuentan como fallo del circuito
+        this.circuitoActividades = registry.circuitBreaker("actividades",
+                CircuitBreakerConfig.from(registry.getDefaultConfig())
+                        .ignoreExceptions(HttpClientErrorException.class).build());
+    }
+
+    /** Llamada protegida por el circuit breaker; con el circuito abierto falla rápido como "servicio no disponible". */
+    private <T> T protegida(Supplier<T> llamada) {
+        try {
+            return circuitoActividades.executeSupplier(llamada);
+        } catch (CallNotPermittedException e) {
+            throw new ServicioNoDisponibleException("actividades-service");
+        }
     }
 
     // ================= casos de uso =================
@@ -261,7 +281,7 @@ public class ReservaService {
 
     private ActividadDto obtenerActividad(Long id) {
         try {
-            return actividades.get().uri("/actividades/{id}", id).retrieve().body(ActividadDto.class);
+            return protegida(() -> actividades.get().uri("/actividades/{id}", id).retrieve().body(ActividadDto.class));
         } catch (HttpClientErrorException.NotFound e) {
             throw new ActividadInexistenteException(id);
         } catch (ResourceAccessException | HttpServerErrorException e) {
@@ -271,10 +291,10 @@ public class ReservaService {
 
     private void descontarCupo(Long id, LocalDate fecha, int cantidad) {
         try {
-            actividades.patch().uri("/actividades/{id}/salidas/{fecha}/cupo", id, fecha)
+            protegida(() -> actividades.patch().uri("/actividades/{id}/salidas/{fecha}/cupo", id, fecha)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(Map.of("cantidad", cantidad))
-                    .retrieve().toBodilessEntity();
+                    .retrieve().toBodilessEntity());
         } catch (HttpClientErrorException.Conflict e) {
             throw new CupoAgotadoException(id);
         } catch (HttpClientErrorException.NotFound e) {
@@ -287,10 +307,10 @@ public class ReservaService {
 
     private void devolverCupo(Long id, LocalDate fecha, int cantidad) {
         try {
-            actividades.post().uri("/actividades/{id}/salidas/{fecha}/cupo/devolucion", id, fecha)
+            protegida(() -> actividades.post().uri("/actividades/{id}/salidas/{fecha}/cupo/devolucion", id, fecha)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(Map.of("cantidad", cantidad))
-                    .retrieve().toBodilessEntity();
+                    .retrieve().toBodilessEntity());
         } catch (RuntimeException ex) {
             // best-effort: se registra para conciliar a mano; no tapa el error original
             log.error("No se pudo devolver cupo: actividad {} fecha {} cantidad {}: {}", id, fecha, cantidad, ex.getMessage());

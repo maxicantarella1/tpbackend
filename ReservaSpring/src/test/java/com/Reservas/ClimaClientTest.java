@@ -1,6 +1,10 @@
 package com.Reservas;
 
 import com.turismo.common.Nivel;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import org.springframework.test.web.client.ExpectedCount;
 import com.turismo.common.ReglaNegocioException;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -26,7 +30,7 @@ class ClimaClientTest {
     private void init() {
         RestClient.Builder b = RestClient.builder().baseUrl("https://clima.test");
         server = MockRestServiceServer.bindTo(b).build();
-        cliente = new ClimaClient(b.build());
+        cliente = new ClimaClient(b.build(), CircuitBreakerRegistry.ofDefaults());
     }
 
     @Test
@@ -55,6 +59,54 @@ class ClimaClientTest {
         server.expect(requestTo(startsWith("https://clima.test/v1/forecast")))
                 .andRespond(withSuccess("{\"otra\":1}", MediaType.APPLICATION_JSON));
         assertTrue(cliente.pronostico(0, 0, LocalDate.of(2026, 11, 1)).isEmpty());
+    }
+
+    private void initConCircuitoSensible() {
+        RestClient.Builder b = RestClient.builder().baseUrl("https://clima.test");
+        server = MockRestServiceServer.bindTo(b).build();
+        var cfg = CircuitBreakerConfig.custom().slidingWindowSize(4).minimumNumberOfCalls(2)
+                .failureRateThreshold(50).waitDurationInOpenState(java.time.Duration.ofMinutes(5)).build();
+        registro = CircuitBreakerRegistry.of(cfg);
+        cliente = new ClimaClient(b.build(), registro);
+    }
+
+    private CircuitBreakerRegistry registro;
+
+    @Test
+    void conLaApiCaidaElCircuitoAbreYDejaDeLlamar() {
+        initConCircuitoSensible();
+        // solo se esperan 2 llamadas reales: una tercera haría fallar el test (el circuito debe cortarla)
+        server.expect(ExpectedCount.times(2), requestTo(startsWith("https://clima.test/v1/forecast")))
+                .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR));
+
+        for (int i = 0; i < 4; i++) {
+            assertTrue(cliente.pronostico(0, 0, LocalDate.of(2026, 11, 1)).isEmpty());
+        }
+
+        assertEquals(CircuitBreaker.State.OPEN, registro.circuitBreaker("clima").getState());
+        server.verify();
+    }
+
+    @Test
+    void unaRespuestaInesperadaTambienCuentaComoFallo() {
+        initConCircuitoSensible();
+        server.expect(ExpectedCount.times(2), requestTo(startsWith("https://clima.test/v1/forecast")))
+                .andRespond(withSuccess("{\"otra\":1}", MediaType.APPLICATION_JSON));
+        cliente.pronostico(0, 0, LocalDate.of(2026, 11, 1));
+        cliente.pronostico(0, 0, LocalDate.of(2026, 11, 1));
+        assertEquals(CircuitBreaker.State.OPEN, registro.circuitBreaker("clima").getState());
+    }
+
+    @Test
+    void unError4xxNoAbreElCircuito() {
+        initConCircuitoSensible();
+        server.expect(ExpectedCount.times(5), requestTo(startsWith("https://clima.test/v1/forecast")))
+                .andRespond(withStatus(HttpStatus.BAD_REQUEST)); // p. ej. fecha fuera del rango de pronóstico
+        for (int i = 0; i < 5; i++) {
+            assertTrue(cliente.pronostico(0, 0, LocalDate.of(2027, 1, 1)).isEmpty());
+        }
+        assertEquals(CircuitBreaker.State.CLOSED, registro.circuitBreaker("clima").getState());
+        server.verify();
     }
 
     private ActividadDto act(int edadMin, int edadMax, Nivel nivel, String estado) {
