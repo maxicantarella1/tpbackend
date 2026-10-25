@@ -1,0 +1,55 @@
+{
+  "realm": "turismo",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "ADMIN", "description": "Administra proveedores, actividades y salidas; ve todas las reservas" },
+      { "name": "USUARIO", "description": "Turista: reserva y gestiona sus propias reservas" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "turismo-client",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "admin@turismo.test",
+      "firstName": "Admin",
+      "lastName": "Turismo",
+      "credentials": [{ "type": "password", "value": "admin", "temporary": false }],
+      "realmRoles": ["ADMIN", "USUARIO"]
+    },
+    {
+      "username": "ana",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "ana@turismo.test",
+      "firstName": "Ana",
+      "lastName": "Turista",
+      "credentials": [{ "type": "password", "value": "ana", "temporary": false }],
+      "realmRoles": ["USUARIO"]
+    },
+    {
+      "username": "pedro",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "pedro@turismo.test",
+      "firstName": "Pedro",
+      "lastName": "Turista",
+      "credentials": [{ "type": "password", "value": "pedro", "temporary": false }],
+      "realmRoles": ["USUARIO"]
+    }
+  ]
+}
